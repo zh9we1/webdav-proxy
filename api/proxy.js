@@ -3,54 +3,51 @@ export default async function handler(req) {
   const target = url.searchParams.get('url');
   const method = req.method;
 
+  // 动态返回 Origin 头，兼容 file:// 的 null 来源
+  const origin = req.headers.get('Origin') || '*';
+  const cors = {
+    'Access-Control-Allow-Origin': origin,
+    'Access-Control-Allow-Methods': 'GET, PUT, PROPFIND, MKCOL, OPTIONS, DELETE',
+    'Access-Control-Allow-Headers': '*',
+    'Access-Control-Expose-Headers': '*',
+    'Access-Control-Max-Age': '86400',
+  };
+
   // CORS 预检
   if (method === 'OPTIONS') {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, PUT, PROPFIND, MKCOL, OPTIONS, DELETE',
-        'Access-Control-Allow-Headers': '*',
-        'Access-Control-Max-Age': '86400',
-      },
-    });
+    return new Response(null, { status: 204, headers: cors });
   }
 
   if (!target) {
-    return new Response('Missing ?url= parameter', { status: 400, headers: { 'Access-Control-Allow-Origin': '*' } });
+    return new Response('Missing ?url= parameter', { status: 400, headers: cors });
   }
 
+  const targetUrl = new URL(target);
+
+  // 只转发必要请求头
+  const forwardHeaders = new Headers();
+  const keep = ['authorization', 'content-type', 'depth', 'user-agent'];
+  for (const h of keep) {
+    const val = req.headers.get(h);
+    if (val) forwardHeaders.set(h, val);
+  }
+  forwardHeaders.set('host', targetUrl.host);
+  forwardHeaders.set('accept', '*/*');
+
   try {
-    // 读取请求体文本
-    let bodyText = null;
+    let body = null;
     if (method !== 'GET' && method !== 'HEAD') {
-      bodyText = await req.text();
+      body = await req.text();
     }
 
-    // 只转发必要的请求头
-    const forwardHeaders = new Headers();
-    if (req.headers.has('authorization')) {
-      forwardHeaders.set('authorization', req.headers.get('authorization'));
-    }
-    if (req.headers.has('content-type')) {
-      forwardHeaders.set('content-type', req.headers.get('content-type'));
-    }
-    if (req.headers.has('depth')) {
-      forwardHeaders.set('depth', req.headers.get('depth'));
-    }
-    forwardHeaders.set('user-agent', 'WebDAV-Proxy/1.0');
-    forwardHeaders.set('accept', '*/*');
-
-    // 发送请求
     const response = await fetch(target, {
       method: method,
       headers: forwardHeaders,
-      body: bodyText,
+      body: body,
     });
 
-    // 构建响应
     const respHeaders = new Headers(response.headers);
-    respHeaders.set('Access-Control-Allow-Origin', '*');
+    respHeaders.set('Access-Control-Allow-Origin', origin);
     respHeaders.set('Access-Control-Expose-Headers', '*');
 
     return new Response(response.body, {
@@ -61,14 +58,9 @@ export default async function handler(req) {
   } catch (err) {
     return new Response(JSON.stringify({ error: err.message }), {
       status: 502,
-      headers: { 
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      },
+      headers: { 'Content-Type': 'application/json', ...cors },
     });
   }
 }
 
-export const config = {
-  runtime: 'edge',
-};
+export const config = { runtime: 'edge' };
