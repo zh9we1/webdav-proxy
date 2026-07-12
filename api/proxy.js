@@ -3,7 +3,6 @@ export default async function handler(req) {
   const target = url.searchParams.get('url');
   const method = req.method;
 
-  // 动态返回 Origin 头，兼容 file:// 的 null 来源
   const origin = req.headers.get('Origin') || '*';
   const cors = {
     'Access-Control-Allow-Origin': origin,
@@ -13,7 +12,6 @@ export default async function handler(req) {
     'Access-Control-Max-Age': '86400',
   };
 
-  // CORS 预检
   if (method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: cors });
   }
@@ -23,15 +21,14 @@ export default async function handler(req) {
   }
 
   const targetUrl = new URL(target);
-
-  // 只转发必要请求头
   const forwardHeaders = new Headers();
-  const keep = ['authorization', 'content-type', 'depth', 'user-agent'];
+  const keep = ['authorization', 'content-type', 'depth'];
   for (const h of keep) {
     const val = req.headers.get(h);
     if (val) forwardHeaders.set(h, val);
   }
   forwardHeaders.set('host', targetUrl.host);
+  forwardHeaders.set('user-agent', 'WebDAV-Proxy/1.0');
   forwardHeaders.set('accept', '*/*');
 
   try {
