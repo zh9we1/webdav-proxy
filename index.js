@@ -16,11 +16,14 @@ const server = http.createServer(async (req, res) => {
   if (!target) { res.writeHead(400); res.end('Missing ?url= parameter'); return; }
 
   try {
-    const targetUrl = new URL(target);
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    const body = chunks.length > 0 ? Buffer.concat(chunks) : null;
+    // 用 Promise 方式收集请求体（兼容性更好）
+    const body = await new Promise((resolve) => {
+      const chunks = [];
+      req.on('data', chunk => chunks.push(chunk));
+      req.on('end', () => resolve(chunks.length > 0 ? Buffer.concat(chunks) : null));
+    });
 
+    const targetUrl = new URL(target);
     const fwd = { 'Host': targetUrl.host, 'User-Agent': 'WebDAV-Proxy/1.0', 'Accept': '*/*' };
     if (req.headers['authorization']) fwd['Authorization'] = req.headers['authorization'];
     if (req.headers['content-type']) fwd['Content-Type'] = req.headers['content-type'];
@@ -34,7 +37,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(resp.status);
     res.end(await resp.text());
   } catch (err) {
-    res.writeHead(502, { 'Content-Type': 'application/json' });
+    res.writeHead(502, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': origin });
     res.end(JSON.stringify({ error: err.message }));
   }
 });
