@@ -1,46 +1,62 @@
-const http = require('http');
+/**
+ * WebDAV Proxy for Railway
+ * Binary-safe — handles EPUB (ZIP) files without corruption.
+ */
+import express from 'express';
 
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://localhost');
-  const target = url.searchParams.get('url');
-  const method = req.method;
-  const origin = req.headers['origin'] || '*';
+const app = express();
+app.use(express.raw({ type: '*/*', limit: '200mb' }));
 
-  res.setHeader('Access-Control-Allow-Origin', origin);
+app.all('*', async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, PROPFIND, MKCOL, OPTIONS, DELETE');
   res.setHeader('Access-Control-Allow-Headers', '*');
   res.setHeader('Access-Control-Expose-Headers', '*');
   res.setHeader('Access-Control-Max-Age', '86400');
 
-  if (method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
-  if (!target) { res.writeHead(400); res.end('Missing ?url= parameter'); return; }
+  if (req.method === 'OPTIONS') {
+    return res.status(204).send();
+  }
+
+  const target = req.query.url;
+  if (!target) {
+    return res.status(400).send('Missing ?url= parameter');
+  }
 
   try {
-    // 用 Promise 方式收集请求体（兼容性更好）
-    const body = await new Promise((resolve) => {
-      const chunks = [];
-      req.on('data', chunk => chunks.push(chunk));
-      req.on('end', () => resolve(chunks.length > 0 ? Buffer.concat(chunks) : null));
+    const targetUrl = new URL(target);
+    const forwardHeaders = {
+      'Host': targetUrl.host,
+      'User-Agent': 'WebDAV-Proxy/1.0',
+      'Accept': '*/*',
+    };
+    if (req.headers['authorization']) forwardHeaders['Authorization'] = req.headers['authorization'];
+    if (req.headers['content-type']) forwardHeaders['Content-Type'] = req.headers['content-type'];
+    if (req.headers['depth']) forwardHeaders['Depth'] = req.headers['depth'];
+
+    const body = (req.method !== 'GET' && req.method !== 'HEAD') ? req.body : null;
+
+    const response = await fetch(target, {
+      method: req.method,
+      headers: forwardHeaders,
+      body: body,
     });
 
-    const targetUrl = new URL(target);
-    const fwd = { 'Host': targetUrl.host, 'User-Agent': 'WebDAV-Proxy/1.0', 'Accept': '*/*' };
-    if (req.headers['authorization']) fwd['Authorization'] = req.headers['authorization'];
-    if (req.headers['content-type']) fwd['Content-Type'] = req.headers['content-type'];
-    if (req.headers['depth']) fwd['Depth'] = req.headers['depth'];
-
-    const resp = await fetch(target, { method, headers: fwd, body });
-
-    for (const [k, v] of resp.headers) {
-      if (!['set-cookie', 'cf-ray'].includes(k)) res.setHeader(k, v);
+    // Forward response headers (skip problematic ones)
+    for (const [k, v] of response.headers) {
+      if (!['set-cookie', 'cf-ray', 'cf-cache-status', 'x-served-by', 'transfer-encoding'].includes(k)) {
+        res.setHeader(k, v);
+      }
     }
-    res.writeHead(resp.status);
-    res.end(await resp.text());
+
+    // ✅ Binary-safe: use arrayBuffer() + Buffer, NOT text()
+    const arrayBuffer = await response.arrayBuffer();
+    res.status(response.status).send(Buffer.from(arrayBuffer));
   } catch (err) {
-    res.writeHead(502, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': origin });
-    res.end(JSON.stringify({ error: err.message }));
+    res.status(502).json({ error: err.message });
   }
 });
 
-const port = process.env.PORT || 3000;
-server.listen(port, () => console.log('WebDAV Proxy running on port', port));
+const port = process.env.PORT || 9000;
+app.listen(port, '0.0.0.0');
+console.log('WebDAV Proxy started on port', port);
