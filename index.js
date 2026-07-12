@@ -1,13 +1,13 @@
 /**
- * WebDAV Proxy for Railway
+ * WebDAV Proxy for Railway (zero dependencies)
  * Binary-safe — handles EPUB (ZIP) files without corruption.
  */
-import express from 'express';
+const http = require('http');
 
-const app = express();
-app.use(express.raw({ type: '*/*', limit: '200mb' }));
+const PORT = process.env.PORT || 9000;
 
-app.all('*', async (req, res) => {
+const server = http.createServer(async (req, res) => {
+  // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, PROPFIND, MKCOL, OPTIONS, DELETE');
   res.setHeader('Access-Control-Allow-Headers', '*');
@@ -15,12 +15,17 @@ app.all('*', async (req, res) => {
   res.setHeader('Access-Control-Max-Age', '86400');
 
   if (req.method === 'OPTIONS') {
-    return res.status(204).send();
+    res.writeHead(204);
+    res.end();
+    return;
   }
 
-  const target = req.query.url;
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const target = url.searchParams.get('url');
   if (!target) {
-    return res.status(400).send('Missing ?url= parameter');
+    res.writeHead(400);
+    res.end('Missing ?url= parameter');
+    return;
   }
 
   try {
@@ -34,15 +39,23 @@ app.all('*', async (req, res) => {
     if (req.headers['content-type']) forwardHeaders['Content-Type'] = req.headers['content-type'];
     if (req.headers['depth']) forwardHeaders['Depth'] = req.headers['depth'];
 
-    const body = (req.method !== 'GET' && req.method !== 'HEAD') ? req.body : null;
+    // Read request body for non-GET requests
+    let body = null;
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      body = await new Promise((resolve) => {
+        const chunks = [];
+        req.on('data', (chunk) => chunks.push(chunk));
+        req.on('end', () => resolve(Buffer.concat(chunks)));
+      });
+    }
 
     const response = await fetch(target, {
       method: req.method,
       headers: forwardHeaders,
-      body: body,
+      body: body || null,
     });
 
-    // Forward response headers (skip problematic ones)
+    // Forward response headers
     for (const [k, v] of response.headers) {
       if (!['set-cookie', 'cf-ray', 'cf-cache-status', 'x-served-by', 'transfer-encoding'].includes(k)) {
         res.setHeader(k, v);
@@ -51,12 +64,14 @@ app.all('*', async (req, res) => {
 
     // ✅ Binary-safe: use arrayBuffer() + Buffer, NOT text()
     const arrayBuffer = await response.arrayBuffer();
-    res.status(response.status).send(Buffer.from(arrayBuffer));
+    res.writeHead(response.status);
+    res.end(Buffer.from(arrayBuffer));
   } catch (err) {
-    res.status(502).json({ error: err.message });
+    res.writeHead(502, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: err.message }));
   }
 });
 
-const port = process.env.PORT || 9000;
-app.listen(port, '0.0.0.0');
-console.log('WebDAV Proxy started on port', port);
+server.listen(PORT, '0.0.0.0', () => {
+  console.log('WebDAV Proxy started on port', PORT);
+});
